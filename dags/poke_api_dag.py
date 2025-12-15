@@ -55,7 +55,7 @@ def pokemon_etl_pipeline():
             aws_secret_access_key=MINIO_PASSWORD
         )
 
-        bucket_name = "temp-bucket"
+        bucket_name = "pokemon-data"
         temp_keys = []
 
         try:
@@ -98,7 +98,7 @@ def pokemon_etl_pipeline():
         }
 
     @task(task_id="generate_bronze_table_to_minio")
-    def generate_bronze_table_to_minio(pokemon_dict: dict):
+    def generate_bronze_table_to_minio(fetch_result: dict):
         from pipe.utils.etl_utils import generate_list_of_all_infos_on_pokemon
         from datetime import datetime, timezone
         from io import BytesIO
@@ -107,28 +107,10 @@ def pokemon_etl_pipeline():
         import pyarrow as pa
         import pyarrow.parquet as pq
         import boto3
-        
-        pokemon_all_infos_list = []
+        import json
 
-        pokemon_all_infos_list = [generate_list_of_all_infos_on_pokemon(pokemon) for pokemon in pokemon_dict]
-
-        df_polars = pl.DataFrame(pokemon_all_infos_list)
-
-        arrow_pokemon_bronze = df_polars.to_arrow()
-
-        metadata = {
-            b"source": b"https://pokeapi.co/api/v2/pokemon?limit=1328",
-            b"datetime_utc": datetime.now(timezone.utc).isoformat().encode('utf-8'),
-            b"layer": b"bronze",
-            b"pipeline": b"pokemon_etl_pipeline",
-            b"compression": b"snappy"
-        }
-        
-        arrow_pokemon_bronze = arrow_pokemon_bronze.replace_schema_metadata(metadata)
-
-        buffer = BytesIO()
-        pq.write_table(arrow_pokemon_bronze, buffer, compression="snappy")
-        buffer.seek(0)
+        bucket_name = fetch_result["bucket"]
+        json_keys = fetch_result["temp_keys"]
 
         MINIO_USER = Variable.get("MINIO_ROOT_USER")
         MINIO_PASSWORD = Variable.get("MINIO_ROOT_PASSWORD")
@@ -139,25 +121,101 @@ def pokemon_etl_pipeline():
             aws_access_key_id=MINIO_USER,
             aws_secret_access_key=MINIO_PASSWORD
         )
+
+        parquets = []
+
+        for key in json_keys:
+
+            temp_json = s3.get_object(
+                Bucket=bucket_name,
+                Key=key
+            )
+
+            batch = json.load(temp_json['Body'])
+
+            batchs_list = []
+
+            for pokemon in batch:
+                row_generated = generate_list_of_all_infos_on_pokemon(pokemon)
+                batchs_list.append(row_generated)
+
+            df_polars = pl.DataFrame(batchs_list)
+            df_arrow = df_polars.to_arrow()
+
+            buffer = BytesIO()
+            pq.write_table(df_arrow, buffer, compression="snappy")
+            buffer.seek(0)
+
+            parquet_key = key.replace(".json", ".parquet")
+
+            s3.put_object(
+                Bucket=bucket_name,
+                Key=parquet_key,
+                Body=buffer.getvalue()
+            )
+
+            parquets.append(parquet_key)
+
+            s3.delete_object(
+                Bucket=bucket_name,
+                Key=key
+            )
+
+            del temp_json, batch, df_polars, df_arrow, buffer
+
+            
+        tables = []
+
+        for parquet in parquets:
+            row = s3.get_object(
+                Bucket=bucket_name,
+                Key=parquet
+            )
+
+            buffer = BytesIO(row["Body"].read())
+
+            table = pq.read_table(buffer)
+
+            tables.append(table)
+
+            del row 
+
+        final_table = pa.concat_tables(tables, promote_options="default")
+
+        metadata = {
+            b"source": b"https://pokeapi.co/api/v2/pokemon?limit=1328",
+            b"datetime_utc": datetime.now(timezone.utc).isoformat().encode('utf-8'),
+            b"layer": b"bronze",
+            b"pipeline": b"pokemon_etl_pipeline",
+            b"compression": b"snappy"
+        }
         
-        bucket_name = "pokemon-data"
-        key = "bronze/pokemons_bronze.parquet"
-        
-        try:
-            s3.create_bucket(Bucket=bucket_name)
-            print(f"Bucket '{bucket_name}' criado")
-        except:
-            print(f"Bucket '{bucket_name}' já existe")
+        final_table = final_table.replace_schema_metadata(metadata)
+
+        buffer = BytesIO()
+        pq.write_table(final_table, buffer, compression="snappy")
+        buffer.seek(0)
+
+        final_table_key = "bronze/pokemons_all_info_bronze.parquet"
+
 
         s3.put_object(
             Bucket=bucket_name,
-            Key=key,
+            Key=final_table_key,
             Body=buffer.getvalue()
         )
 
+        del final_table, buffer 
+
+        for parquet in parquets: 
+            s3.delete_object(
+                Bucket=bucket_name,
+                Key=parquet
+            )
+
         return {
             "bucket": bucket_name,
-            "key": key
+            "key": final_table_key
         }
     
     with TaskGroup(group_id="extract") as extract_group:
