@@ -32,6 +32,12 @@ def pokemon_etl_pipeline():
     def fetch_all_pokemon_data(api_data: dict):
         from concurrent.futures import ThreadPoolExecutor
         from pipe.utils.etl_utils import fetch_all_pokemons
+        from airflow.sdk.definitions.variable import Variable
+        import json 
+        import boto3
+
+        BATCH_SIZE = 150
+        MAX_WORKERS = 30
 
         pokemons_url = [pokemon["url"].rstrip("/").split("/") for pokemon in api_data]
 
@@ -39,13 +45,57 @@ def pokemon_etl_pipeline():
 
         list_of_requests = [f"https://pokeapi.co/api/v2/pokemon/{id}/" for id in pokemons_id]
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            pokemons_responses = executor.map(fetch_all_pokemons, list_of_requests)
-            pokemons_responses = list(pokemons_responses)
+        MINIO_USER = Variable.get("MINIO_ROOT_USER")
+        MINIO_PASSWORD = Variable.get("MINIO_ROOT_PASSWORD")
 
-        pokemons_responses_filtered = [r for r in pokemons_responses if r is not None]
+        s3 = boto3.client(
+            "s3",
+            endpoint_url="http://minio:9000",
+            aws_access_key_id=MINIO_USER,
+            aws_secret_access_key=MINIO_PASSWORD
+        )
 
-        return pokemons_responses_filtered
+        bucket_name = "temp-bucket"
+        temp_keys = []
+
+        try:
+            s3.create_bucket(Bucket=bucket_name)
+            print(f"Bucket '{bucket_name}' criado")
+        except:
+            print(f"Bucket '{bucket_name}' já existe")
+
+
+        batch_num = 1
+
+        for i in range(0, len(list_of_requests), BATCH_SIZE):
+            current_batch = list_of_requests[i:i + BATCH_SIZE]
+            
+
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                pokemons_responses = executor.map(fetch_all_pokemons, current_batch)
+                pokemons_responses = list(pokemons_responses)
+
+            pokemons_responses_filtered = [r for r in pokemons_responses if r is not None]
+
+            json_data = json.dumps(pokemons_responses_filtered)
+            temp_key = f"{bucket_name}/temp/batch_{batch_num:04d}.json"
+
+            s3.put_object(
+                Bucket=bucket_name,
+                Key=temp_key,
+                Body=json_data.encode("utf-8")
+            )
+
+            temp_keys.append(temp_key)
+
+            del current_batch, pokemons_responses, pokemons_responses_filtered, json_data
+
+            batch_num += 1
+
+        return {
+            "bucket": bucket_name,
+            "temp_keys": temp_keys
+        }
 
     @task(task_id="generate_bronze_table_to_minio")
     def generate_bronze_table_to_minio(pokemon_dict: dict):
