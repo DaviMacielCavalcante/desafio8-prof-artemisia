@@ -1,0 +1,41 @@
+\c dev;
+
+CREATE TABLE IF NOT EXISTS gold.abilities(
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50) NOT NULL,
+    url VARCHAR(255) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gold.forms(
+    form_id SERIAL PRIMARY KEY,
+    name VARCHAR(50) NOT NULL,
+    url VARCHAR(255) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gold.games(
+    game_id SERIAL PRIMARY KEY,
+    game_name VARCHAR(50) NOT NULL UNIQUE,
+    url VARCHAR(255) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gold.items(
+    item_id SERIAL PRIMARY KEY,
+    item_name VARCHAR(50) NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS gold.moves(
+    move_id SERIAL PRIMARY KEY,
+    move_name VARCHAR(50) NOT NULL UNIQUE,
+    move_url VARCHAR(255) NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS gold.types(
+    type_id SERIAL PRIMARY KEY,
+    type_name VARCHAR(50) NOT NULL UNIQUE,
+    type_url VARCHAR(255) NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS gold.species(
+    species_id SERIAL PRIMARY KEY,
+    species_name VARCHAR(50) NOT NULL
+);

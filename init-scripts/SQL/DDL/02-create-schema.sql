@@ -1,0 +1,3 @@
+\c dev;
+
+CREATE SCHEMA IF NOT EXISTS gold;
