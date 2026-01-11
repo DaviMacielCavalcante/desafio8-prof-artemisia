@@ -333,6 +333,237 @@ def pokemon_etl_pipeline():
             "key": pokemons_all_infos_silver_key
         }
 
+    @task(task_id="populate_gold_fact_table_postgres")
+    def populate_gold_fact_table_postgres(silver_info: dict):
+        import duckdb
+        import os
+        from airflow.sdk.definitions.variable import Variable
+     
+        
+        bucket = silver_info["bucket"]
+        silver_key = silver_info["key"]
+
+        POSTGRES_USER = os.getenv("POSTGRES_USER")
+        POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
+        MINIO_USER = Variable.get("MINIO_ROOT_USER")
+        MINIO_PASSWORD = Variable.get("MINIO_ROOT_PASSWORD")
+
+        
+        conn = duckdb.connect()
+        
+        conn.execute("INSTALL postgres; LOAD postgres;")
+        conn.execute("INSTALL httpfs; LOAD httpfs;")
+        
+        conn.execute(f"""
+            SET s3_endpoint = 'minio:9000';
+            SET s3_access_key_id = '{MINIO_USER}';
+            SET s3_secret_access_key='{MINIO_PASSWORD}';
+            SET s3_use_ssl = false;
+            SET s3_url_style='path';
+        """)
+        
+        conn.execute(f"""
+            ATTACH 'postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@postgres:5432/dev'
+            AS postgres_db (TYPE POSTGRES)
+        """)
+        
+        s3_path = f"s3://{bucket}/{silver_key}"
+        
+        conn.execute(f"""
+            CREATE TEMP TABLE temp_pokemon AS
+            SELECT 
+                id,
+                name, 
+                base_experience, 
+                height, 
+                weight, 
+                "order" AS order_for_sort, 
+                location_area_encounters AS location,
+                MAX(CASE WHEN unnest.stat.name = 'hp' THEN unnest.base_stat END) AS hp,
+                MAX(CASE WHEN unnest.stat.name = 'hp' THEN unnest.effort END) AS hp_effort,
+                MAX(CASE WHEN unnest.stat.name = 'attack' THEN unnest.base_stat END) AS attack,
+                MAX(CASE WHEN unnest.stat.name = 'attack' THEN unnest.effort END) AS attack_effort,
+                MAX(CASE WHEN unnest.stat.name = 'defense' THEN unnest.base_stat END) AS defense,
+                MAX(CASE WHEN unnest.stat.name = 'defense' THEN unnest.effort END) AS defense_effort,
+                MAX(CASE WHEN unnest.stat.name = 'special-attack' THEN unnest.base_stat END) AS special_attack,
+                MAX(CASE WHEN unnest.stat.name = 'special-attack' THEN unnest.effort END) AS special_attack_effort,
+                MAX(CASE WHEN unnest.stat.name = 'special-defense' THEN unnest.base_stat END) AS special_defense,
+                MAX(CASE WHEN unnest.stat.name = 'special-defense' THEN unnest.effort END) AS special_defense_effort,
+                MAX(CASE WHEN unnest.stat.name = 'speed' THEN unnest.base_stat END) AS speed,
+                MAX(CASE WHEN unnest.stat.name = 'speed' THEN unnest.effort END) AS speed_effort
+            FROM read_parquet('{s3_path}') AS p,
+            UNNEST(p.stats)
+            GROUP BY id, name, base_experience, height, weight, "order", location_area_encounters
+            ORDER BY id ASC
+        """)
+        
+        conn.execute("""
+            INSERT INTO postgres_db.gold.pokemon
+            SELECT * FROM temp_pokemon;
+        """)
+        
+        conn.close()
+        
+        return True
+        
+    @task(task_id="populate_gold_dimensional_tables_postgres")
+    def populate_gold_dimensional_tables_postgres(silver_info: dict):
+        import duckdb
+        import os
+        from airflow.sdk.definitions.variable import Variable
+     
+        
+        bucket = silver_info["bucket"]
+        silver_key = silver_info["key"]
+
+        POSTGRES_USER = os.getenv("POSTGRES_USER")
+        POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
+        MINIO_USER = Variable.get("MINIO_ROOT_USER")
+        MINIO_PASSWORD = Variable.get("MINIO_ROOT_PASSWORD")
+
+        
+        conn = duckdb.connect()
+        
+        conn.execute("INSTALL postgres; LOAD postgres;")
+        conn.execute("INSTALL httpfs; LOAD httpfs;")
+        
+        conn.execute(f"""
+            SET s3_endpoint = 'minio:9000';
+            SET s3_access_key_id = '{MINIO_USER}';
+            SET s3_secret_access_key='{MINIO_PASSWORD}';
+            SET s3_use_ssl = false;
+            SET s3_url_style='path';
+        """)
+        
+        conn.execute(f"""
+            ATTACH 'postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@postgres:5432/dev'
+            AS postgres_db (TYPE POSTGRES)
+        """)
+        
+        s3_path = f"s3://{bucket}/{silver_key}"
+        
+        # ABILITIES
+        
+        conn.execute(f"""
+            CREATE TEMP TABLE temp_abilities AS
+            SELECT DISTINCT
+                unnest.ability.name AS ability_name, 
+                unnest.ability.url AS ability_url,
+            FROM
+                read_parquet('{s3_path}'),
+                UNNEST(abilities)
+            ORDER BY unnest.ability.name ASC
+        """)
+        
+        conn.execute("""
+            INSERT INTO postgres_db.gold.abilities (name, url)
+            SELECT * FROM temp_abilities;
+        """)
+        
+        # FORMS
+        
+        conn.execute(f"""
+            CREATE TEMP TABLE temp_forms AS
+            SELECT 
+                unnest.name,
+                unnest.url
+            FROM 
+                read_parquet('{s3_path}') AS p,
+                UNNEST(p.forms)    
+            ORDER BY id        
+        """);
+        
+        conn.execute("""
+            INSERT INTO postgres_db.gold.forms (name, url)
+            SELECT * FROM temp_forms;
+        """)
+        
+        # GAMES
+        
+        conn.execute(f"""
+            CREATE TEMP TABLE temp_games AS
+            SELECT DISTINCT
+                unnest.version.name,
+                unnest.version.url
+            FROM read_parquet('{s3_path}'),
+                UNNEST(game_indices)
+        """)
+        
+        conn.execute("""
+            INSERT INTO postgres_db.gold.games (game_name, url)
+            SELECT * FROM temp_games;
+        """)
+        
+        # HELD ITEMS
+        
+        conn.execute(f"""
+            CREATE TEMP TABLE temp_items AS
+            SELECT DISTINCT
+                unnest.item.name
+            FROM read_parquet('{s3_path}') AS p,
+            UNNEST(p.held_items)
+            ORDER BY unnest.item.name ASC
+        """)
+        
+        conn.execute("""
+            INSERT INTO postgres_db.gold.items (item_name)
+            SELECT * FROM temp_items;
+        """)
+        
+        # MOVES
+        
+        conn.execute(f"""
+            CREATE TEMP TABLE temp_moves AS
+            SELECT DISTINCT
+                m.unnest.move.name,
+                m.unnest.move.url
+            FROM read_parquet('{s3_path}') AS p,
+            UNNEST(p.moves) AS m
+            ORDER BY m.unnest.move.name ASC
+        """)
+        
+        conn.execute("""
+            INSERT INTO postgres_db.gold.moves (move_name, move_url)
+            SELECT * FROM temp_moves;
+        """)
+        
+        # TYPES 
+        
+        conn.execute(f"""
+            CREATE TEMP TABLE temp_types AS
+            SELECT DISTINCT
+                unnest.type.name,
+                unnest.type.url
+            FROM read_parquet('{s3_path}') AS p,
+            UNNEST(p.types)
+            ORDER BY unnest.type.name ASC
+        """)
+        
+        conn.execute("""
+            INSERT INTO postgres_db.gold.types (type_name, type_url)
+            SELECT * FROM temp_types;
+        """)
+        
+        # SPECIES
+        
+        conn.execute(f"""
+            CREATE TEMP TABLE temp_species AS
+            SELECT DISTINCT
+                p.species.name
+            FROM read_parquet('{s3_path}') AS p
+            ORDER BY p.id
+        """)
+        
+        conn.execute("""
+            INSERT INTO postgres_db.gold.species (species_name)
+            SELECT * FROM temp_species;
+        """)
+        
+        conn.close()
+        
+        return True
+        
+        
     
     with TaskGroup(group_id="bronze") as bronze:
         api_response = fetch_pokemons_ids_data()
@@ -341,8 +572,12 @@ def pokemon_etl_pipeline():
 
     with TaskGroup(group_id="silver") as silver:
         silver_bucket = generate_silver_table_to_minio(bronze_bucket)
+        
+    with TaskGroup(group_id="gold") as gold:
+        gold_fact = populate_gold_fact_table_postgres(silver_bucket)
+        gold_dimensional = populate_gold_dimensional_tables_postgres(silver_bucket)
 
-    bronze >> silver
+    bronze >> silver >> gold
 
 
 pokemon_dag = pokemon_etl_pipeline()
