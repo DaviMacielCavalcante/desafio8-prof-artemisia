@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS gold.pokemon(
     height INTEGER NOT NULL,
     weight INTEGER NOT NULL,
     order_for_sort INTEGER NOT NULL,
-    location VARCHAR(50) NOT NULL,
+    location VARCHAR(255) NOT NULL,
     hp INTEGER NOT NULL,
     hp_effort INTEGER NOT NULL,
     attack INTEGER NOT NULL,
