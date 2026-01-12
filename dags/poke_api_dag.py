@@ -404,8 +404,6 @@ def pokemon_etl_pipeline():
         
         conn.close()
         
-        return True
-        
     @task(task_id="populate_gold_dimensional_tables_postgres")
     def populate_gold_dimensional_tables_postgres(silver_info: dict):
         import duckdb
@@ -442,6 +440,34 @@ def pokemon_etl_pipeline():
         
         s3_path = f"s3://{bucket}/{silver_key}"
         
+        conn.execute(f"""
+            CREATE TEMP TABLE temp_pokemon AS
+            SELECT 
+                id,
+                name, 
+                base_experience, 
+                height, 
+                weight, 
+                "order" AS order_for_sort, 
+                location_area_encounters AS location,
+                MAX(CASE WHEN unnest.stat.name = 'hp' THEN unnest.base_stat END) AS hp,
+                MAX(CASE WHEN unnest.stat.name = 'hp' THEN unnest.effort END) AS hp_effort,
+                MAX(CASE WHEN unnest.stat.name = 'attack' THEN unnest.base_stat END) AS attack,
+                MAX(CASE WHEN unnest.stat.name = 'attack' THEN unnest.effort END) AS attack_effort,
+                MAX(CASE WHEN unnest.stat.name = 'defense' THEN unnest.base_stat END) AS defense,
+                MAX(CASE WHEN unnest.stat.name = 'defense' THEN unnest.effort END) AS defense_effort,
+                MAX(CASE WHEN unnest.stat.name = 'special-attack' THEN unnest.base_stat END) AS special_attack,
+                MAX(CASE WHEN unnest.stat.name = 'special-attack' THEN unnest.effort END) AS special_attack_effort,
+                MAX(CASE WHEN unnest.stat.name = 'special-defense' THEN unnest.base_stat END) AS special_defense,
+                MAX(CASE WHEN unnest.stat.name = 'special-defense' THEN unnest.effort END) AS special_defense_effort,
+                MAX(CASE WHEN unnest.stat.name = 'speed' THEN unnest.base_stat END) AS speed,
+                MAX(CASE WHEN unnest.stat.name = 'speed' THEN unnest.effort END) AS speed_effort
+            FROM read_parquet('{s3_path}') AS p,
+            UNNEST(p.stats)
+            GROUP BY id, name, base_experience, height, weight, "order", location_area_encounters
+            ORDER BY id ASC
+        """)
+        
         # ABILITIES
         
         conn.execute(f"""
@@ -456,7 +482,7 @@ def pokemon_etl_pipeline():
         """)
         
         conn.execute("""
-            INSERT INTO postgres_db.gold.abilities (name, url)
+            INSERT INTO postgres_db.gold.abilities (ability_name, ability_url)
             SELECT * FROM temp_abilities;
         """)
         
@@ -474,7 +500,7 @@ def pokemon_etl_pipeline():
         """);
         
         conn.execute("""
-            INSERT INTO postgres_db.gold.forms (name, url)
+            INSERT INTO postgres_db.gold.forms (form_name, form_url)
             SELECT * FROM temp_forms;
         """)
         
@@ -490,7 +516,7 @@ def pokemon_etl_pipeline():
         """)
         
         conn.execute("""
-            INSERT INTO postgres_db.gold.games (game_name, url)
+            INSERT INTO postgres_db.gold.games (game_name, game_url)
             SELECT * FROM temp_games;
         """)
         
@@ -559,12 +585,86 @@ def pokemon_etl_pipeline():
             SELECT * FROM temp_species;
         """)
         
+        # BRIDGES
+        
+        conn.execute(f"""
+            INSERT INTO postgres_db.gold.pokemon_abilities
+            SELECT
+                p.id,
+                a.ability_id,
+                unnest.is_hidden,
+                unnest.slot
+            FROM 
+                read_parquet('{s3_path}') AS p,
+                UNNEST(p.abilities),
+                postgres_db.gold.abilities AS a
+            WHERE unnest.ability.name = a.ability_name             
+        """)
+        
+        conn.execute("""
+            INSERT INTO postgres_db.gold.pokemon_forms
+            SELECT
+                p.id,
+                f.form_id
+            FROM 
+                postgres_db.gold.pokemon AS p,
+                postgres_db.gold.forms AS f
+            WHERE f.form_name LIKE '%' || p.name || '%'            
+        """)
+        
+        conn.execute(f"""
+            INSERT INTO postgres_db.gold.pokemon_items
+            SELECT
+                p.id,
+                i.item_id
+            FROM 
+                read_parquet('{s3_path}') AS p,
+                UNNEST(p.held_items),
+                postgres_db.gold.items AS i
+            WHERE unnest.item.name = i.item_name
+            ORDER BY p.id ASC
+        """)
+        
+        conn.execute(f"""
+            INSERT INTO postgres_db.gold.pokemon_moves
+            SELECT
+                p.id AS pokemon_id,
+                m.move_id AS move_id
+            FROM 
+                read_parquet('{s3_path}') AS p,
+                UNNEST(p.moves),
+                postgres_db.gold.moves AS m
+            WHERE unnest.move.name = m.move_name
+            ORDER BY p.id ASC
+        """)
+        
+        conn.execute(f"""
+            INSERT INTO postgres_db.gold.pokemon_types
+            SELECT 
+                p.id,
+                t.type_id,
+                unnest.slot
+            FROM read_parquet('{s3_path}') AS p,
+            UNNEST(p.types),
+            postgres_db.gold.types AS t
+            WHERE unnest.type.name = t.type_name
+            ORDER BY p.id ASC
+        """)
+        
+        conn.execute(f"""
+            INSERT INTO postgres_db.gold.pokemon_species
+            SELECT 
+                p.id,
+                s.species_id,
+                p.species.url        
+            FROM read_parquet('{s3_path}') AS p,
+            postgres_db.gold.species AS s
+            WHERE p.species.name = s.species_name
+            ORDER BY p.id
+        """)
+        
         conn.close()
-        
-        return True
-        
-        
-    
+             
     with TaskGroup(group_id="bronze") as bronze:
         api_response = fetch_pokemons_ids_data()
         pokemons_infos = fetch_all_pokemon_data(api_response)
@@ -576,6 +676,8 @@ def pokemon_etl_pipeline():
     with TaskGroup(group_id="gold") as gold:
         gold_fact = populate_gold_fact_table_postgres(silver_bucket)
         gold_dimensional = populate_gold_dimensional_tables_postgres(silver_bucket)
+        
+        gold_fact >> gold_dimensional
 
     bronze >> silver >> gold
 
