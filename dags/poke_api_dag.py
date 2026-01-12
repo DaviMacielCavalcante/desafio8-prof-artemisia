@@ -663,6 +663,19 @@ def pokemon_etl_pipeline():
             ORDER BY p.id
         """)
         
+        conn.execute(f"""
+            INSERT INTO postgres_db.gold.pokemon_games (pokemon_id, game_id,game_index)
+            SELECT DISTINCT
+                p.id AS pokemon_id,
+                g.game_id,
+                unnest.game_index
+            FROM 
+                read_parquet('{s3_path}') AS p,
+                UNNEST(p.game_indices),
+                postgres_db.gold.games AS g
+            WHERE unnest.version.name = g.game_name
+        """)
+        
         conn.close()
              
     with TaskGroup(group_id="bronze") as bronze:
