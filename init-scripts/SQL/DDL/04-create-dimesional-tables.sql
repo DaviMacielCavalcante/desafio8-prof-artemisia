@@ -1,21 +1,21 @@
 \c dev;
 
 CREATE TABLE IF NOT EXISTS gold.abilities(
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(50) NOT NULL,
-    url VARCHAR(255) NOT NULL
+    ability_id SERIAL PRIMARY KEY,
+    ability_name VARCHAR(50) NOT NULL,
+    ability_url VARCHAR(255) NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS gold.forms(
     form_id SERIAL PRIMARY KEY,
-    name VARCHAR(50) NOT NULL,
-    url VARCHAR(255) NOT NULL
+    form_name VARCHAR(50) NOT NULL,
+    form_url VARCHAR(255) NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS gold.games(
     game_id SERIAL PRIMARY KEY,
     game_name VARCHAR(50) NOT NULL UNIQUE,
-    url VARCHAR(255) NOT NULL
+    game_url VARCHAR(255) NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS gold.items(

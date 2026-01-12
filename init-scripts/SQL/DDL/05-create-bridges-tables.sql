@@ -2,7 +2,7 @@
 
 CREATE TABLE IF NOT EXISTS gold.pokemon_abilities(
     pokemon_id INTEGER REFERENCES gold.pokemon(id),
-    abilities_id INTEGER REFERENCES gold.abilities(id),
+    abilities_id INTEGER REFERENCES gold.abilities(ability_id),
     is_hidden BOOLEAN NOT NULL,
     slot INTEGER NOT NULL     
 );
