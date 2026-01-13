@@ -6,7 +6,6 @@ __pycache__/
 /logs
 *.ipynb
 *parquet
-*.md
 
 # C extensions
 *.so
